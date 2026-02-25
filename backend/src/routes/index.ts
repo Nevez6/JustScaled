@@ -1,9 +1,8 @@
 import { Router } from "express";
+import healthRoutes from "./health.routes";
 
 const router = Router();
 
-router.get("/health", (req, res) => {
-  res.json({ ok: true, name: "justscaled-backend" });
-});
+router.use(healthRoutes);
 
 export default router;
