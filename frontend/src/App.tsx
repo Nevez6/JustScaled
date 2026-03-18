@@ -21,6 +21,16 @@ type RequestItem = {
   status: "pending" | "approved" | "rejected";
 };
 
+type ConflictItem = {
+  requestId: string;
+  messages: string[];
+};
+
+type EmployeeRule = {
+  employee: string;
+  maxHoursPerPeriod: number;
+};
+
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
@@ -95,11 +105,11 @@ function Button({
         "focus:outline-none focus:ring-2 focus:ring-white/20",
         disabled && "opacity-50 cursor-not-allowed",
         variant === "primary" &&
-          "bg-white text-black border-white hover:bg-white/90",
+        "bg-white text-black border-white hover:bg-white/90",
         variant === "ghost" &&
-          "bg-transparent text-white border-white/10 hover:bg-white/10",
+        "bg-transparent text-white border-white/10 hover:bg-white/10",
         variant === "danger" &&
-          "bg-transparent text-white border-white/10 hover:bg-white/10"
+        "bg-transparent text-white border-white/10 hover:bg-white/10"
       )}
     >
       {children}
@@ -244,6 +254,12 @@ export default function App() {
     },
   ]);
 
+  const [employeeRules] = useState<EmployeeRule[]>([
+    { employee: "Ana Silva", maxHoursPerPeriod: 8 },
+    { employee: "Bruno Costa", maxHoursPerPeriod: 12 },
+    { employee: "Carla Lima", maxHoursPerPeriod: 16 },
+  ]);
+
   const selectedMonthLabel = useMemo(() => formatMonthLabel(period), [period]);
 
   useEffect(() => {
@@ -278,10 +294,26 @@ export default function App() {
   };
 
   const approve = (id: string) => {
+    const requestConflicts = getConflictsByRequest(id);
+
+    const blockingConflicts = requestConflicts.filter(
+      (msg) =>
+        msg.includes("Ultrapassa limite") ||
+        msg.includes("Slot cheio") ||
+        msg.includes("Slot inexistente")
+    );
+
+    if (blockingConflicts.length > 0) {
+      alert(`Não foi possível aprovar:\n- ${blockingConflicts.join("\n- ")}`);
+      return;
+    }
+
     setRequests((r) =>
       r.map((x) => (x.id === id ? { ...x, status: "approved" } : x))
     );
   };
+
+
 
   const reject = (id: string) => {
     setRequests((r) =>
@@ -290,6 +322,86 @@ export default function App() {
   };
 
   const pendingCount = requests.filter((r) => r.status === "pending").length;
+
+  const approvedRequests = useMemo(
+    () => requests.filter((r) => r.status === "approved"),
+    [requests]
+  );
+
+  const approvedHoursByEmployee = useMemo(() => {
+    const map: Record<string, number> = {};
+
+    for (const req of approvedRequests) {
+      map[req.employee] = (map[req.employee] || 0) + req.hours;
+    }
+
+    return map;
+  }, [approvedRequests]);
+
+  const occupancyBySlotKey = useMemo(() => {
+    const map: Record<string, number> = {};
+
+    for (const req of approvedRequests) {
+      const key = `${req.sector}__${req.shift}__${req.role}`;
+      map[key] = (map[key] || 0) + 1;
+    }
+
+    return map;
+  }, [approvedRequests]);
+
+  const conflicts = useMemo<ConflictItem[]>(() => {
+    return requests.map((req) => {
+      const messages: string[] = [];
+
+      const slot = slots.find(
+        (s) =>
+          s.sector === req.sector &&
+          s.shift === req.shift &&
+          s.role === req.role
+      );
+
+      if (!slot) {
+        messages.push("Slot inexistente para esta combinação.");
+      }
+
+      const employeeRule = employeeRules.find(
+        (rule) => rule.employee === req.employee
+      );
+
+      const currentApprovedHours = approvedHoursByEmployee[req.employee] || 0;
+
+      const isAlreadyApproved = req.status === "approved";
+      const projectedHours = isAlreadyApproved
+        ? currentApprovedHours
+        : currentApprovedHours + req.hours;
+
+      if (employeeRule && projectedHours > employeeRule.maxHoursPerPeriod) {
+        messages.push(
+          `Ultrapassa limite de horas (${projectedHours}/${employeeRule.maxHoursPerPeriod}h).`
+        );
+      }
+
+      if (slot) {
+        const key = `${req.sector}__${req.shift}__${req.role}`;
+        const currentOccupancy = occupancyBySlotKey[key] || 0;
+        const projectedOccupancy = isAlreadyApproved
+          ? currentOccupancy
+          : currentOccupancy + 1;
+
+        if (projectedOccupancy > slot.max) {
+          messages.push(`Slot cheio (${projectedOccupancy}/${slot.max}).`);
+        }
+      }
+
+      return {
+        requestId: req.id,
+        messages,
+      };
+    });
+  }, [requests, slots, employeeRules, approvedHoursByEmployee, occupancyBySlotKey]);
+
+  const getConflictsByRequest = (requestId: string) =>
+    conflicts.find((c) => c.requestId === requestId)?.messages || [];
 
   const coverage = useMemo(() => {
     // cobertura fake: usa slots criados e conta aprovados por combinação (setor/turno/cargo)
@@ -306,10 +418,10 @@ export default function App() {
   const canPublish = coverage.every((c) => c.approved >= c.min) && coverage.length > 0;
 
   return (
-    <div className="min-h-screen bg-[#0b0c10] text-white">
-      <div className="flex">
+    <div className="h-screen flex flex-col overflow-hidden bg-[#0b0c10] text-white">
+      <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <aside className="hidden w-64 flex-col gap-1 border-r border-white/10 bg-black/30 p-4 md:flex">
+        <aside className="hidden w-64 flex-col gap-1 border-r border-white/10 bg-black/30 p-4 md:flex h-full overflow-y-auto">
           <div className="mb-4">
             <div className="text-lg font-semibold">JustScaled</div>
             <div className="text-xs text-white/60">Painel do RH</div>
@@ -358,7 +470,7 @@ export default function App() {
         </aside>
 
         {/* Main */}
-        <main className="flex-1">
+        <main className="flex-1 flex flex-col overflow-hidden">
           {/* Header */}
           <header className="sticky top-0 z-10 border-b border-white/10 bg-black/30 backdrop-blur px-4 py-3">
             <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
@@ -381,7 +493,7 @@ export default function App() {
           </header>
 
           {/* Content */}
-          <div className="mx-auto grid max-w-6xl gap-4 p-4 md:grid-cols-12">
+          <div className="mx-auto grid max-w-6xl gap-4 p-4 md:grid-cols-12 flex-1 overflow-y-auto flex-1 content-start">
             {/* Visão geral */}
             {active === "dashboard" && (
               <>
@@ -442,8 +554,8 @@ export default function App() {
                           {api.status === "online"
                             ? "Online ✅"
                             : api.status === "loading"
-                            ? "Verificando…"
-                            : "Offline ⚠️"}
+                              ? "Verificando…"
+                              : "Offline ⚠️"}
                         </div>
                         <Button
                           variant="ghost"
@@ -465,11 +577,11 @@ export default function App() {
 
                       <div className="mt-3 text-xs text-white/60">Resposta</div>
                       <pre className="mt-1 overflow-auto rounded-xl border border-white/10 bg-black/30 p-2 text-xs text-white/80">
-{api.status === "online"
-  ? JSON.stringify(api.data, null, 2)
-  : api.status === "loading"
-  ? "{ ... }"
-  : "{ error: \"offline\" }"}
+                        {api.status === "online"
+                          ? JSON.stringify(api.data, null, 2)
+                          : api.status === "loading"
+                            ? "{ ... }"
+                            : "{ error: \"offline\" }"}
                       </pre>
                     </div>
                   </Card>
@@ -688,48 +800,65 @@ export default function App() {
                     sobreposição e slot cheio.
                   </div>
 
-                  <Table headers={["ID", "Funcionário", "Setor", "Turno", "Função", "Horas", "Status", "Ações"]}>
-                    {requests.map((r) => (
-                      <tr key={r.id} className="text-white/80">
-                        <td className="px-3 py-2 font-mono text-xs">{r.id}</td>
-                        <td className="px-3 py-2">{r.employee}</td>
-                        <td className="px-3 py-2">{r.sector}</td>
-                        <td className="px-3 py-2">{r.shift}</td>
-                        <td className="px-3 py-2">{r.role}</td>
-                        <td className="px-3 py-2">{r.hours}</td>
-                        <td className="px-3 py-2">
-                          <Pill
-                            tone={
-                              r.status === "approved"
-                                ? "good"
-                                : r.status === "rejected"
-                                ? "bad"
-                                : "warn"
-                            }
-                          >
-                            {r.status}
-                          </Pill>
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex gap-2">
-                            <Button
-                              variant="ghost"
-                              disabled={r.status !== "pending"}
-                              onClick={() => approve(r.id)}
+                  <Table headers={["ID", "Funcionário", "Setor", "Turno", "Função", "Horas", "Status", "Conflitos", "Ações"]}>
+                    {requests.map((r) => {
+                      const requestConflicts = getConflictsByRequest(r.id);
+
+                      return (
+                        <tr key={r.id} className="text-white/80">
+                          <td className="px-3 py-2 font-mono text-xs">{r.id}</td>
+                          <td className="px-3 py-2">{r.employee}</td>
+                          <td className="px-3 py-2">{r.sector}</td>
+                          <td className="px-3 py-2">{r.shift}</td>
+                          <td className="px-3 py-2">{r.role}</td>
+                          <td className="px-3 py-2">{r.hours}</td>
+                          <td className="px-3 py-2">
+                            <Pill
+                              tone={
+                                r.status === "approved"
+                                  ? "good"
+                                  : r.status === "rejected"
+                                    ? "bad"
+                                    : "warn"
+                              }
                             >
-                              Aprovar
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              disabled={r.status !== "pending"}
-                              onClick={() => reject(r.id)}
-                            >
-                              Recusar
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              {r.status}
+                            </Pill>
+                          </td>
+                          <td className="px-3 py-2">
+                            {requestConflicts.length === 0 ? (
+                              <Pill tone="good">Sem conflitos</Pill>
+                            ) : (
+                              <div className="flex flex-col gap-1">
+                                {requestConflicts.map((msg, index) => (
+                                  <Pill key={index} tone="warn">
+                                    {msg}
+                                  </Pill>
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex gap-2">
+                              <Button
+                                variant="ghost"
+                                disabled={r.status !== "pending"}
+                                onClick={() => approve(r.id)}
+                              >
+                                Aprovar
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                disabled={r.status !== "pending"}
+                                onClick={() => reject(r.id)}
+                              >
+                                Recusar
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </Table>
 
                   <div className="mt-3 flex gap-2">
